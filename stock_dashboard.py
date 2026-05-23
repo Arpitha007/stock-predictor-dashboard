@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import xgboost as xgb
 import plotly.graph_objects as go
 import warnings
 import time
@@ -11,99 +10,70 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="Arpitha's Stock Predictor", layout="wide")
 st.title("🚀 Arpitha's 2-3 Week Stock Predictor")
-st.markdown("**Running Locally** | Horizon: 10-15 Trading Days | Capital: ₹40,000")
+st.markdown("**Simple Technical Momentum Model** | Capital: ₹40,000")
 
 # Sidebar
 st.sidebar.header("Settings")
-capital = st.sidebar.number_input("Total Capital (₹)", value=40000, min_value=10000)
+capital = st.sidebar.number_input("Total Capital (₹)", value=40000)
 max_stocks = st.sidebar.slider("Max Stocks", 3, 6, 5)
-risk_level = st.sidebar.selectbox("Risk Level", ["Moderate", "Aggressive"])
 
-# Tickers - Reduced for speed
 tickers = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", 
            "BHARTIARTL.NS", "TCS.NS", "INFY.NS", "LT.NS", "AXISBANK.NS"]
 
 @st.cache_data(ttl=3600)
 def get_data(ticker):
-    for attempt in range(4):
+    for _ in range(3):
         try:
-            df = yf.download(ticker, period="2y", progress=False, timeout=15)
-            if not df.empty and len(df) > 300:
+            df = yf.download(ticker, period="2y", progress=False, timeout=10)
+            if not df.empty:
                 return df
-            time.sleep(1.5)
+            time.sleep(1)
         except:
             time.sleep(2)
     return pd.DataFrame()
 
-def add_features(df, nifty):
-    if df.empty or nifty.empty:
-        return pd.DataFrame()
-    df = df.copy()
-    
-    df['Returns'] = df['Close'].pct_change()
-    for p in [5,10,20]:
-        df[f'SMA_{p}'] = df['Close'].rolling(p).mean()
-        df[f'EMA_{p}'] = df['Close'].ewm(span=p).mean()
-    
-    delta = df['Close'].diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    df['Momentum_10'] = df['Close'] / df['Close'].shift(10) - 1
-    df['Target'] = df['Close'].shift(-12) / df['Close'] - 1
-    
-    return df.dropna()
-
-# Main Button
 if st.button("🔄 Run Fresh Prediction", type="primary"):
-    with st.spinner("Fetching data from Yahoo Finance..."):
-        nifty = get_data("^NSEI")
+    with st.spinner("Fetching data..."):
         results = []
+        nifty = get_data("^NSEI")
         
-        for i, ticker in enumerate(tickers):
-            st.write(f"Analyzing {ticker.replace('.NS','')}...")
+        for ticker in tickers:
             df = get_data(ticker)
-            if len(df) < 400:
+            if len(df) < 300:
                 continue
                 
-            df_feat = add_features(df, nifty)
-            if df_feat.empty:
-                continue
-                
-            feature_cols = [col for col in df_feat.columns if col not in 
-                           ['Target', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']]
+            # Simple Momentum Score
+            df['Returns'] = df['Close'].pct_change()
+            mom_10 = df['Close'].iloc[-1] / df['Close'].iloc[-11] - 1
+            rsi = 100 - (100 / (1 + (df['Close'].diff().where(lambda x: x>0,0).rolling(14).mean() / 
+                                    -df['Close'].diff().where(lambda x: x<0,0).rolling(14).mean())))
+            vol = df['Returns'].rolling(20).std().iloc[-1]
             
-            X = df_feat[feature_cols]
-            y = df_feat['Target']
+            score = (mom_10 * 0.6) + ((rsi < 70).astype(int) * 0.3) - (vol * 2)
             
-            model = xgb.XGBRegressor(n_estimators=200, learning_rate=0.07, max_depth=5, random_state=42)
-            model.fit(X, y)
-            
-            latest = df_feat.iloc[-1:]
-            pred_return = model.predict(latest[feature_cols])[0]
+            pred_return = round(mom_10 * 100 * 1.8, 2)  # Rough projection
             
             results.append({
                 'Ticker': ticker.replace('.NS', ''),
                 'Price': round(df['Close'].iloc[-1], 2),
-                'Pred_Return': round(pred_return * 100, 2),
-                'Signal': "STRONG BUY" if pred_return > 0.12 else "BUY" if pred_return > 0.08 else "HOLD"
+                'Pred_Return': pred_return,
+                'Signal': "STRONG BUY" if pred_return > 12 else "BUY" if pred_return > 6 else "HOLD",
+                'Momentum_Score': round(score, 3)
             })
         
         if results:
             df_pred = pd.DataFrame(results).sort_values('Pred_Return', ascending=False)
             st.session_state['predictions'] = df_pred
-            st.success("✅ Prediction Complete!")
+            st.success("✅ Done!")
         else:
-            st.error("Could not fetch data. Try again in 2-3 minutes.")
+            st.error("Data fetch failed. Try again.")
 
 # Display
 if 'predictions' in st.session_state:
     df_pred = st.session_state['predictions']
-    st.subheader("Top Predictions")
-    display_df = df_pred.head(8).copy()
-    display_df['Allocation (₹)'] = (capital / max_stocks).round(0)
-    st.dataframe(display_df, use_container_width=True)
+    st.subheader("Top Recommendations")
+    disp = df_pred.head(8).copy()
+    disp['Allocation (₹)'] = (capital / max_stocks).round(0)
+    st.dataframe(disp, use_container_width=True)
 
-st.info("💡 **Tip:** Local version works much better than Streamlit Cloud.")
+st.caption("Simplified version - More stable on cloud")
