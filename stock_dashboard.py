@@ -5,6 +5,7 @@ import numpy as np
 import xgboost as xgb
 import plotly.graph_objects as go
 import warnings
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -18,25 +19,27 @@ capital = st.sidebar.number_input("Total Capital (₹)", value=40000, min_value=
 max_stocks = st.sidebar.slider("Max Stocks", 3, 6, 5)
 risk_level = st.sidebar.selectbox("Risk Level", ["Moderate", "Aggressive"])
 
-stop_loss_pct = 8 if risk_level == "Moderate" else 10
-
-# ================== TICKERS ==================
+# ================== TICKERS (Reduced for stability) ==================
 tickers = [
-    "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "BHARTIARTL.NS",
-    "TCS.NS", "INFY.NS", "LT.NS", "AXISBANK.NS", "SUNPHARMA.NS",
-    "BEL.NS", "HAL.NS", "TRENT.NS", "POLYCAB.NS"
+    "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", 
+    "BHARTIARTL.NS", "TCS.NS", "INFY.NS", "LT.NS"
 ]
 
 # ================== FUNCTIONS ==================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=7200)  # Cache for 2 hours
 def get_data(ticker):
-    try:
-        return yf.download(ticker, period="2y", progress=False)
-    except:
-        return pd.DataFrame()
+    for attempt in range(3):  # Retry 3 times
+        try:
+            data = yf.download(ticker, period="2y", progress=False, timeout=10)
+            if not data.empty:
+                return data
+            time.sleep(1)
+        except:
+            time.sleep(2)
+    return pd.DataFrame()
 
 def add_features(df, nifty):
-    if df.empty:
+    if df.empty or nifty.empty:
         return pd.DataFrame()
     df = df.copy()
     df['Returns'] = df['Close'].pct_change()
@@ -76,14 +79,8 @@ def train_and_predict(ticker, nifty):
         X = df_feat[feature_cols]
         y = df_feat['Target']
         
-        model = xgb.XGBRegressor(
-            n_estimators=300, 
-            learning_rate=0.05, 
-            max_depth=6,
-            subsample=0.8, 
-            colsample_bytree=0.8, 
-            random_state=42
-        )
+        model = xgb.XGBRegressor(n_estimators=250, learning_rate=0.06, max_depth=5,
+                               subsample=0.8, colsample_bytree=0.8, random_state=42)
         model.fit(X, y)
         
         latest = df_feat.iloc[-1:]
@@ -94,15 +91,14 @@ def train_and_predict(ticker, nifty):
             'Ticker': ticker.replace('.NS', ''),
             'Price': current_price,
             'Pred_Return': round(pred_return * 100, 2),
-            'Signal': "STRONG BUY" if pred_return > 0.12 else "BUY" if pred_return > 0.08 else "HOLD",
-            'Volume': int(df['Volume'].iloc[-1])
+            'Signal': "STRONG BUY" if pred_return > 0.12 else "BUY" if pred_return > 0.08 else "HOLD"
         }
     except:
         return None
 
 # ================== MAIN ==================
 if st.button("🔄 Run Fresh Prediction", type="primary"):
-    with st.spinner("Analyzing 14 stocks for 2-3 week opportunities..."):
+    with st.spinner("Trying to fetch market data..."):
         nifty = get_data("^NSEI")
         results = []
         
@@ -112,34 +108,48 @@ if st.button("🔄 Run Fresh Prediction", type="primary"):
             if res:
                 results.append(res)
             progress_bar.progress((i + 1) / len(tickers))
+            time.sleep(0.5)  # Small delay to avoid rate limit
         
         if results:
             df_pred = pd.DataFrame(results)
             df_pred = df_pred.sort_values('Pred_Return', ascending=False)
             st.session_state['predictions'] = df_pred
-            st.success(f"✅ Analyzed {len(results)} stocks successfully!")
+            st.success(f"✅ Successfully analyzed {len(results)} stocks!")
         else:
-            st.error("❌ Failed to get data. Please try again later.")
+            st.error("❌ Still unable to fetch data from Yahoo Finance. This is a common temporary issue.")
 
-# Display Results
+# Display logic (same as before)
 if 'predictions' in st.session_state:
     df_pred = st.session_state['predictions']
-    
     col1, col2 = st.columns([3, 1])
     
     with col1:
         st.subheader("📊 Top Predictions")
-        display_df = df_pred.head(10).copy()
+        display_df = df_pred.head(8).copy()
         display_df['Suggested Allocation (₹)'] = (capital / max_stocks).round(0)
         st.dataframe(display_df, use_container_width=True)
     
     with col2:
         st.subheader("💰 Recommended Portfolio")
         buy_stocks = df_pred[df_pred['Signal'].str.contains("BUY")].head(max_stocks)
-        
         if not buy_stocks.empty:
             for _, row in buy_stocks.iterrows():
                 alloc = int(capital / len(buy_stocks))
                 st.success(f"**{row['Ticker']}** → ₹{alloc} | +{row['Pred_Return']}%")
         else:
-            st.warning
+            st.warning("No strong BUY signals right now.")
+
+    st.subheader("📈 Top 2 Stock Charts")
+    for _, stock in df_pred.head(2).iterrows():
+        ticker_full = stock['Ticker'] + ".NS"
+        data = get_data(ticker_full).tail(60)
+        if not data.empty:
+            fig = go.Figure(data=[go.Candlestick(x=data.index, open=data['Open'], high=data['High'],
+                                                low=data['Low'], close=data['Close'])])
+            fig.update_layout(title=f"{stock['Ticker']} | Pred: +{stock['Pred_Return']}%", height=380)
+            st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.info("👆 Click **Run Fresh Prediction**")
+
+st.caption("⚠️ yfinance can be unstable on cloud. Try multiple times or run locally.")
