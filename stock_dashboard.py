@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from datetime import datetime
 import plotly.graph_objects as go
 import warnings
 
@@ -98,8 +97,7 @@ def train_and_predict(ticker, nifty):
             'Signal': "STRONG BUY" if pred_return > 0.12 else "BUY" if pred_return > 0.08 else "HOLD",
             'Volume': int(df['Volume'].iloc[-1])
         }
-    except Exception as e:
-        st.warning(f"Error with {ticker}: {str(e)}")
+    except:
         return None
 
 # ================== MAIN ==================
@@ -121,7 +119,7 @@ if st.button("🔄 Run Fresh Prediction", type="primary"):
             st.session_state['predictions'] = df_pred
             st.success(f"✅ Analyzed {len(results)} stocks successfully!")
         else:
-            st.error("❌ No data returned. Please try again later.")
+            st.error("❌ Failed to get data. Please try again later.")
 
 # Display Results
 if 'predictions' in st.session_state:
@@ -144,8 +142,4 @@ if 'predictions' in st.session_state:
                 alloc = int(capital / len(buy_stocks))
                 st.success(f"**{row['Ticker']}** → ₹{alloc} | +{row['Pred_Return']}%")
         else:
-            st.warning("No strong BUY signals currently.")
-
-    # Top 3 Charts
-    st.subheader("📈 Top 3 Stock Charts")
-    for _, stock in df_pred.head(3).iterrows():
+            st.warning
